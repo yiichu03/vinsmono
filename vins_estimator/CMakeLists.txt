@@ -54,4 +54,9 @@ add_executable(vins_estimator
 
 target_link_libraries(vins_estimator ${catkin_LIBRARIES} ${OpenCV_LIBS} ${CERES_LIBRARIES}) 
 
+add_executable(export_vins_preint_pack
+    src/tools/export_vins_preint_pack.cpp
+    src/parameters.cpp
+)
+target_link_libraries(export_vins_preint_pack ${catkin_LIBRARIES} ${OpenCV_LIBS} ${CERES_LIBRARIES})
 
