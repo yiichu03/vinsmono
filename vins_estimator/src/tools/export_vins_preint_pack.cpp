@@ -259,6 +259,11 @@ static void appendMatrixBlock(std::ostream &os, const std::string &name, const E
   os << '\n';
 }
 
+struct PreintFactorJacobians {
+  Eigen::Matrix<double, 15, 15> J_s = Eigen::Matrix<double, 15, 15>::Zero();
+  Eigen::Matrix<double, 15, 15> J_e = Eigen::Matrix<double, 15, 15>::Zero();
+};
+
 static std::string with_suffix_before_extension(const std::string &path, const std::string &suffix) {
   const size_t slash = path.find_last_of("/\\");
   const size_t filename_begin = (slash == std::string::npos) ? 0 : (slash + 1);
@@ -274,7 +279,8 @@ static void write_pack_txt(const std::string &out_txt, const std::string &imu_tx
                            const Eigen::Vector3d &dV, const Eigen::Matrix<double, 15, 15> &Sigma_vins_raw, const Eigen::Matrix3d &dq_dbg,
                            const Eigen::Matrix3d &dphi_dbg_analytic, const Eigen::Matrix3d &dphi_dbg_fd,
                            const Eigen::Matrix3d &dphi_dbg_used, const Eigen::Matrix<double, 15, 15> &Sigma_z_gtsam,
-                           const Eigen::Matrix<double, 9, 6> &JincBias_ba_bg, const std::string &dphi_dbg_source) {
+                           const Eigen::Matrix<double, 9, 6> &JincBias_ba_bg, const Eigen::Matrix<double, 15, 15> &J_e_preint,
+                           const Eigen::Matrix<double, 15, 15> &J_s_preint, const std::string &dphi_dbg_source) {
   std::ofstream ofs(out_txt, std::ios::trunc);
   if (!ofs.is_open()) {
     throw std::runtime_error("failed to open for writing: " + out_txt);
@@ -306,6 +312,8 @@ static void write_pack_txt(const std::string &out_txt, const std::string &imu_tx
 
   appendMatrixBlock(ofs, "Sigma_z_vins_gtsam", Sigma_z_gtsam);
   appendMatrixBlock(ofs, "JincBias_ba_bg_vins", JincBias_ba_bg);
+  appendMatrixBlock(ofs, "J_e_preint_vins", J_e_preint);
+  appendMatrixBlock(ofs, "J_s_preint_vins", J_s_preint);
 }
 
 static inline Eigen::Matrix3d skew(const Eigen::Vector3d &v) {
@@ -333,6 +341,26 @@ static Eigen::Vector3d so3_log(const Eigen::Matrix3d &R) {
   return (theta / (2.0 * sin_theta)) * vee;
 }
 
+static Eigen::Matrix3d so3_right_jacobian(const Eigen::Vector3d &phi) {
+  const double theta = phi.norm();
+  const Eigen::Matrix3d I = Eigen::Matrix3d::Identity();
+  const Eigen::Matrix3d Phi = skew(phi);
+  const Eigen::Matrix3d Phi2 = Phi * Phi;
+
+  if (theta < 1e-8) {
+    // Series: Jr ≈ I - 0.5*Phi + 1/12*Phi^2
+    return I - 0.5 * Phi + (1.0 / 12.0) * Phi2;
+  }
+
+  const double theta2 = theta * theta;
+  const double theta3 = theta2 * theta;
+  const double c = std::cos(theta);
+  const double s = std::sin(theta);
+  const double c1 = (1.0 - c) / theta2;
+  const double c2 = (theta - s) / theta3;
+  return I - c1 * Phi + c2 * Phi2;
+}
+
 static Eigen::Matrix3d so3_right_jacobian_inverse(const Eigen::Vector3d &phi) {
   const double theta = phi.norm();
   const Eigen::Matrix3d I = Eigen::Matrix3d::Identity();
@@ -349,6 +377,45 @@ static Eigen::Matrix3d so3_right_jacobian_inverse(const Eigen::Vector3d &phi) {
   const double cot_half_theta = std::cos(half_theta) / std::sin(half_theta);
   const double a = (1.0 / theta2) - (0.5 / theta) * cot_half_theta;
   return I + 0.5 * Phi + a * Phi2;
+}
+
+static PreintFactorJacobians build_preint_factor_jacobians_local(const Eigen::Matrix3d &dR, const Eigen::Vector3d &dP,
+                                                                  const Eigen::Vector3d &dV, const double dt,
+                                                                  const Eigen::Matrix<double, 9, 6> &JincBias_ba_bg) {
+  const Eigen::Vector3d phi = so3_log(dR);
+  const Eigen::Matrix3d Jr = so3_right_jacobian(phi);
+  const Eigen::Matrix3d Jr_inv = so3_right_jacobian_inverse(phi);
+  const Eigen::Matrix3d I = Eigen::Matrix3d::Identity();
+
+  // State x order: [dp, dtheta, dv, dba, dbg]
+  Eigen::Matrix<double, 15, 15> F = Eigen::Matrix<double, 15, 15>::Zero();
+  F.block<3, 3>(0, 0) = I;
+  F.block<3, 3>(0, 3) = -skew(dP);
+  F.block<3, 3>(0, 6) = dt * I;
+  F.block<3, 3>(3, 3) = I;
+  F.block<3, 3>(6, 3) = -skew(dV);
+  F.block<3, 3>(6, 6) = I;
+  F.block<3, 3>(9, 9) = I;
+  F.block<3, 3>(12, 12) = I;
+
+  // Residual z order: [dphi, dp, dv, dba, dbg]
+  Eigen::Matrix<double, 15, 15> G = Eigen::Matrix<double, 15, 15>::Zero();
+  G.block<3, 3>(0, 3) = I;     // dp_e <- dp
+  G.block<3, 3>(3, 0) = Jr;    // dtheta_e <- Jr * dphi
+  G.block<3, 3>(6, 6) = I;     // dv_e <- dv
+  G.block<3, 3>(9, 9) = -I;    // dba_e <- -dba
+  G.block<3, 3>(12, 12) = -I;  // dbg_e <- -dbg
+
+  Eigen::Matrix<double, 15, 15> G_inv = G.transpose();
+  G_inv.block<3, 3>(0, 3) = Jr_inv;
+
+  Eigen::Matrix<double, 15, 15> J = F;
+  J.topRightCorner<9, 6>() += G.topLeftCorner<9, 9>() * JincBias_ba_bg;
+
+  PreintFactorJacobians out;
+  out.J_e = G_inv;
+  out.J_s = -G_inv * J;
+  return out;
 }
 
 static Eigen::Matrix<double, 15, 15> jac_vins_error_to_gtsam_tangent_z(const Eigen::Vector3d &phi_hat) {
@@ -501,14 +568,18 @@ int main(int argc, char **argv) {
     };
     const Eigen::Matrix<double, 9, 6> JincBias_ba_bg_fd = build_jinc_bias(dphi_dbg_fd);
     const Eigen::Matrix<double, 9, 6> JincBias_ba_bg_analytic = build_jinc_bias(dphi_dbg_analytic);
+    const PreintFactorJacobians jac_fd = build_preint_factor_jacobians_local(dR, dP, dV, DT, JincBias_ba_bg_fd);
+    const PreintFactorJacobians jac_analytic = build_preint_factor_jacobians_local(dR, dP, dV, DT, JincBias_ba_bg_analytic);
 
     const std::string out_txt_fd = with_suffix_before_extension(out_txt, "_fd");
     const std::string out_txt_analytic = with_suffix_before_extension(out_txt, "_analytic");
 
     write_pack_txt(out_txt_fd, imu_txt, config_yaml, rows.front().t, rows.back().t, DT, dt_nominal, dR, dP, dV, preint.covariance, dq_dbg,
-                   dphi_dbg_analytic, dphi_dbg_fd, dphi_dbg_fd, Sigma_z_gtsam, JincBias_ba_bg_fd, "finite_difference");
+                   dphi_dbg_analytic, dphi_dbg_fd, dphi_dbg_fd, Sigma_z_gtsam, JincBias_ba_bg_fd, jac_fd.J_e, jac_fd.J_s,
+                   "finite_difference");
     write_pack_txt(out_txt_analytic, imu_txt, config_yaml, rows.front().t, rows.back().t, DT, dt_nominal, dR, dP, dV, preint.covariance, dq_dbg,
-                   dphi_dbg_analytic, dphi_dbg_fd, dphi_dbg_analytic, Sigma_z_gtsam, JincBias_ba_bg_analytic, "analytic_from_vins_dtheta_dbg");
+                   dphi_dbg_analytic, dphi_dbg_fd, dphi_dbg_analytic, Sigma_z_gtsam, JincBias_ba_bg_analytic, jac_analytic.J_e,
+                   jac_analytic.J_s, "analytic_from_vins_dtheta_dbg");
 
     std::cout << std::setprecision(17) << "integrated interval: ts=" << rows.front().t << " te=" << rows.back().t << " DT=" << DT << "\n";
     std::cout << "wrote (finite-difference dphi/dbg): " << out_txt_fd << "\n";
