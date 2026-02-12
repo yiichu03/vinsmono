@@ -175,7 +175,6 @@ static Config load_config_yaml(const std::string &path) {
   }
   cfg.gravity = to_vec3(g, "gravity");
 
-  // nominal dt (optional)
   (void)find_yaml_scalar_double(content, "dt", cfg.dt);
 
   if (!find_yaml_scalar_double(content, "sigma_g_c", cfg.sigma_g_c) || !find_yaml_scalar_double(content, "sigma_a_c", cfg.sigma_a_c) ||
@@ -259,28 +258,10 @@ static void appendMatrixBlock(std::ostream &os, const std::string &name, const E
   os << '\n';
 }
 
-struct PreintFactorJacobians {
-  Eigen::Matrix<double, 15, 15> J_s = Eigen::Matrix<double, 15, 15>::Zero();
-  Eigen::Matrix<double, 15, 15> J_e = Eigen::Matrix<double, 15, 15>::Zero();
-};
-
-static std::string with_suffix_before_extension(const std::string &path, const std::string &suffix) {
-  const size_t slash = path.find_last_of("/\\");
-  const size_t filename_begin = (slash == std::string::npos) ? 0 : (slash + 1);
-  const size_t dot = path.find_last_of('.');
-  if (dot == std::string::npos || dot <= filename_begin) {
-    return path + suffix;
-  }
-  return path.substr(0, dot) + suffix + path.substr(dot);
-}
-
 static void write_pack_txt(const std::string &out_txt, const std::string &imu_txt, const std::string &config_yaml, const double ts,
                            const double te, const double DT, const double dt_nominal, const Eigen::Matrix3d &dR, const Eigen::Vector3d &dP,
-                           const Eigen::Vector3d &dV, const Eigen::Matrix<double, 15, 15> &Sigma_vins_raw, const Eigen::Matrix3d &dq_dbg,
-                           const Eigen::Matrix3d &dphi_dbg_analytic, const Eigen::Matrix3d &dphi_dbg_fd,
-                           const Eigen::Matrix3d &dphi_dbg_used, const Eigen::Matrix<double, 15, 15> &Sigma_z_gtsam,
-                           const Eigen::Matrix<double, 9, 6> &JincBias_ba_bg, const Eigen::Matrix<double, 15, 15> &J_e_preint,
-                           const Eigen::Matrix<double, 15, 15> &J_s_preint, const std::string &dphi_dbg_source) {
+                           const Eigen::Vector3d &dV, const Eigen::Matrix<double, 15, 15> &Sigma_z_gtsam,
+                           const Eigen::Matrix<double, 9, 6> &JincBias_ba_bg) {
   std::ofstream ofs(out_txt, std::ios::trunc);
   if (!ofs.is_open()) {
     throw std::runtime_error("failed to open for writing: " + out_txt);
@@ -292,8 +273,7 @@ static void write_pack_txt(const std::string &out_txt, const std::string &imu_tx
   ofs << std::setprecision(17) << "# interval: ts=" << ts << " te=" << te << " DT=" << DT << "\n";
   ofs << std::setprecision(17) << "# dt_nominal: " << dt_nominal << "\n";
   ofs << std::setprecision(17) << "# vins_noise: ACC_N=" << ACC_N << " GYR_N=" << GYR_N << " ACC_W=" << ACC_W << " GYR_W=" << GYR_W << "\n";
-  ofs << "# z_order: [dphi, dp, dv, dba, dbg]\n";
-  ofs << "# dphi_dbg_source: " << dphi_dbg_source << "\n\n";
+  ofs << "# z_order: [dphi, dp, dv, dba, dbg]\n\n";
 
   appendMatrixBlock(ofs, "dR_vins", dR);
   appendMatrixBlock(ofs, "dP_vins", dP);
@@ -302,137 +282,18 @@ static void write_pack_txt(const std::string &out_txt, const std::string &imu_tx
   DT_mat(0, 0) = DT;
   appendMatrixBlock(ofs, "DT_vins", DT_mat);
 
-  // Raw (VINS native) blocks for debugging:
-  // - state/error order: [dp, dtheta, dv, dba, dbg]
-  appendMatrixBlock(ofs, "Sigma_vins_raw", Sigma_vins_raw);
-  appendMatrixBlock(ofs, "dq_dbg_vins_raw", dq_dbg);
-  appendMatrixBlock(ofs, "dphi_dbg_vins_analytic", dphi_dbg_analytic);
-  appendMatrixBlock(ofs, "dphi_dbg_vins_fd", dphi_dbg_fd);
-  appendMatrixBlock(ofs, "dphi_dbg_vins_used", dphi_dbg_used);
-
   appendMatrixBlock(ofs, "Sigma_z_vins_gtsam", Sigma_z_gtsam);
   appendMatrixBlock(ofs, "JincBias_ba_bg_vins", JincBias_ba_bg);
-  appendMatrixBlock(ofs, "J_e_preint_vins", J_e_preint);
-  appendMatrixBlock(ofs, "J_s_preint_vins", J_s_preint);
 }
 
-static inline Eigen::Matrix3d skew(const Eigen::Vector3d &v) {
-  Eigen::Matrix3d S;
-  S << 0.0, -v.z(), v.y(), v.z(), 0.0, -v.x(), -v.y(), v.x(), 0.0;
-  return S;
-}
-
-static inline double clamp(double x, double lo, double hi) {
-  return std::max(lo, std::min(hi, x));
-}
-
-static Eigen::Vector3d so3_log(const Eigen::Matrix3d &R) {
-  const double cos_theta = clamp((R.trace() - 1.0) * 0.5, -1.0, 1.0);
-  const double theta = std::acos(cos_theta);
-  Eigen::Vector3d vee;
-  vee << (R(2, 1) - R(1, 2)), (R(0, 2) - R(2, 0)), (R(1, 0) - R(0, 1));
-  if (theta < 1e-9) {
-    return 0.5 * vee;
-  }
-  const double sin_theta = std::sin(theta);
-  if (std::abs(sin_theta) < 1e-12) {
-    return 0.5 * vee;
-  }
-  return (theta / (2.0 * sin_theta)) * vee;
-}
-
-static Eigen::Matrix3d so3_right_jacobian(const Eigen::Vector3d &phi) {
-  const double theta = phi.norm();
-  const Eigen::Matrix3d I = Eigen::Matrix3d::Identity();
-  const Eigen::Matrix3d Phi = skew(phi);
-  const Eigen::Matrix3d Phi2 = Phi * Phi;
-
-  if (theta < 1e-8) {
-    // Series: Jr ≈ I - 0.5*Phi + 1/12*Phi^2
-    return I - 0.5 * Phi + (1.0 / 12.0) * Phi2;
-  }
-
-  const double theta2 = theta * theta;
-  const double theta3 = theta2 * theta;
-  const double c = std::cos(theta);
-  const double s = std::sin(theta);
-  const double c1 = (1.0 - c) / theta2;
-  const double c2 = (theta - s) / theta3;
-  return I - c1 * Phi + c2 * Phi2;
-}
-
-static Eigen::Matrix3d so3_right_jacobian_inverse(const Eigen::Vector3d &phi) {
-  const double theta = phi.norm();
-  const Eigen::Matrix3d I = Eigen::Matrix3d::Identity();
-  const Eigen::Matrix3d Phi = skew(phi);
-  const Eigen::Matrix3d Phi2 = Phi * Phi;
-
-  if (theta < 1e-8) {
-    // Series: Jr^{-1} ≈ I + 0.5*Phi + 1/12*Phi^2
-    return I + 0.5 * Phi + (1.0 / 12.0) * Phi2;
-  }
-
-  const double theta2 = theta * theta;
-  const double half_theta = 0.5 * theta;
-  const double cot_half_theta = std::cos(half_theta) / std::sin(half_theta);
-  const double a = (1.0 / theta2) - (0.5 / theta) * cot_half_theta;
-  return I + 0.5 * Phi + a * Phi2;
-}
-
-static PreintFactorJacobians build_preint_factor_jacobians_local(const Eigen::Matrix3d &dR, const Eigen::Vector3d &dP,
-                                                                  const Eigen::Vector3d &dV, const double dt,
-                                                                  const Eigen::Matrix<double, 9, 6> &JincBias_ba_bg) {
-  const Eigen::Vector3d phi = so3_log(dR);
-  const Eigen::Matrix3d Jr = so3_right_jacobian(phi);
-  const Eigen::Matrix3d Jr_inv = so3_right_jacobian_inverse(phi);
-  const Eigen::Matrix3d I = Eigen::Matrix3d::Identity();
-
-  // State x order: [dp, dtheta, dv, dba, dbg]
-  Eigen::Matrix<double, 15, 15> F = Eigen::Matrix<double, 15, 15>::Zero();
-  F.block<3, 3>(0, 0) = I;
-  F.block<3, 3>(0, 3) = -skew(dP);
-  F.block<3, 3>(0, 6) = dt * I;
-  F.block<3, 3>(3, 3) = I;
-  F.block<3, 3>(6, 3) = -skew(dV);
-  F.block<3, 3>(6, 6) = I;
-  F.block<3, 3>(9, 9) = I;
-  F.block<3, 3>(12, 12) = I;
-
-  // Residual z order: [dphi, dp, dv, dba, dbg]
-  Eigen::Matrix<double, 15, 15> G = Eigen::Matrix<double, 15, 15>::Zero();
-  G.block<3, 3>(0, 3) = I;     // dp_e <- dp
-  G.block<3, 3>(3, 0) = Jr;    // dtheta_e <- Jr * dphi
-  G.block<3, 3>(6, 6) = I;     // dv_e <- dv
-  G.block<3, 3>(9, 9) = -I;    // dba_e <- -dba
-  G.block<3, 3>(12, 12) = -I;  // dbg_e <- -dbg
-
-  Eigen::Matrix<double, 15, 15> G_inv = G.transpose();
-  G_inv.block<3, 3>(0, 3) = Jr_inv;
-
-  Eigen::Matrix<double, 15, 15> J = F;
-  J.topRightCorner<9, 6>() += G.topLeftCorner<9, 9>() * JincBias_ba_bg;
-
-  PreintFactorJacobians out;
-  out.J_e = G_inv;
-  out.J_s = -G_inv * J;
-  return out;
-}
-
-static Eigen::Matrix<double, 15, 15> jac_vins_error_to_gtsam_tangent_z(const Eigen::Vector3d &phi_hat) {
+static Eigen::Matrix<double, 15, 15> jac_vins_error_to_gtsam_tangent_z() {
   Eigen::Matrix<double, 15, 15> A = Eigen::Matrix<double, 15, 15>::Zero();
   const Eigen::Matrix3d I = Eigen::Matrix3d::Identity();
-  // VINS error:  [dp, dtheta, dv, dba, dbg]
-  // GTSAM z:     [dphi, dp, dv, dba, dbg]  (TangentPreintegration uses additive dphi on phi_hat)
-  // Relationship: dtheta ≈ Jr(phi_hat) * dphi  =>  dphi ≈ Jr^{-1}(phi_hat) * dtheta
-  const Eigen::Matrix3d Jr_inv = so3_right_jacobian_inverse(phi_hat);
-  A.block<3, 3>(0, 3) = Jr_inv; // dphi <- dtheta
-  A.block<3, 3>(3, 0) = I;      // dp   <- dp
-  A.block<3, 3>(6, 6) = I;      // dv   <- dv
-  // IMPORTANT: VINS IntegrationBase covariance last 6 dims correspond to bias increments (b_j - b_i),
-  // while our GTSAM tangent z uses (b_i - b_j) for the factor residual convention.
-  // This only flips cross-covariance signs; bias-bias covariance stays the same.
-  A.block<3, 3>(9, 9) = -I;      // dba  <- -dba
-  A.block<3, 3>(12, 12) = -I;    // dbg  <- -dbg
+  A.block<3, 3>(0, 3) = I;      // dphi <- dtheta
+  A.block<3, 3>(3, 0) = I;      // dp <- dp
+  A.block<3, 3>(6, 6) = I;      // dv <- dv
+  A.block<3, 3>(9, 9) = -I;     // dba <- -dba
+  A.block<3, 3>(12, 12) = -I;   // dbg <- -dbg
   return A;
 }
 
@@ -471,119 +332,51 @@ int main(int argc, char **argv) {
     }
 
     const Config cfg = load_config_yaml(config_yaml);
-    // 读取IMU数据（时间戳、角速度w、线加速度a）
     const std::vector<ImuRow> rows = read_imu_txt(imu_txt);
 
-    // ---- Map swift_vio config into VINS globals ----
-    // VINS uses G as "specific-force gravity" (i.e. -gravity accel), so that a stationary IMU measures +G.
-    // VINS中G表示"比力重力"（静止IMU测量到的重力），因此是配置中gravity的相反数
     G = -cfg.gravity;
     const double dt_nominal = (cfg.dt > 0.0) ? cfg.dt : estimate_nominal_dt(rows);
     const double inv_sqrt_dt = 1.0 / std::sqrt(dt_nominal);
-    // IntegrationBase uses trapezoidal (two endpoint) noise injections for accel/gyro meas noise.
-    // For continuous-time white noise density (sigma_*_c), the discrete endpoint sample std is ~sigma/sqrt(dt),
-    // and the trapezoidal rule underestimates the integral variance by ~2, so we apply an extra sqrt(2).
-    // 噪声缩放：VINS用梯形积分，需对连续时间噪声做离散化转换
-    const double meas_scale = std::sqrt(2.0) * inv_sqrt_dt;
-    // 加速度计测量噪声（离散化）
-    ACC_N = cfg.sigma_a_c * meas_scale;
-    // 陀螺仪测量噪声（离散化）
-    GYR_N = cfg.sigma_g_c * meas_scale;
-    // Bias random-walk is injected once per step (no trapezoidal duplication), so no sqrt(2) factor.
-    // 加速度计偏置随机游走噪声（无梯形因子，仅除以sqrt(dt)）
+
+    ACC_N = cfg.sigma_a_c * inv_sqrt_dt;
+    GYR_N = cfg.sigma_g_c * inv_sqrt_dt;
     ACC_W = cfg.sigma_aw_c * inv_sqrt_dt;
-    // 陀螺仪偏置随机游走噪声
     GYR_W = cfg.sigma_gw_c * inv_sqrt_dt;
 
-    // ---- Preintegrate ----
-    // 1. 初始化预积分对象（传入第一帧IMU的加速度/角速度+初始偏置）
     IntegrationBase preint(rows.front().a, rows.front().w, cfg.bias_accel, cfg.bias_gyro);
-    // 2. 遍历IMU数据，逐帧递推预积分
     for (size_t k = 0; k + 1 < rows.size(); ++k) {
-      const double dt = rows[k + 1].t - rows[k].t; // 计算当前帧与下一帧的时间差
+      const double dt = rows[k + 1].t - rows[k].t;
       if (!(dt > 0.0)) {
         continue;
       }
-      // 核心调用：递推更新ΔR/Δp/Δv/协方差
       preint.push_back(dt, rows[k + 1].a, rows[k + 1].w);
     }
-    // 3. 提取预积分结果（代码中ΔR/Δp/Δv的最终值）
-    const Eigen::Matrix3d dR = preint.delta_q.toRotationMatrix(); // 旋转增量（矩阵）
-    const Eigen::Vector3d dP = preint.delta_p; 
+
+    const Eigen::Matrix3d dR = preint.delta_q.toRotationMatrix();
+    const Eigen::Vector3d dP = preint.delta_p;
     const Eigen::Vector3d dV = preint.delta_v;
     const double DT = preint.sum_dt;
 
-    // ---- Convert to GTSAM Tangent z order: [dphi, dp, dv, dba, dbg] ----
-    // 1. 将VINS的旋转矩阵dR转换为SO(3)李代数（角轴表示）
-    const Eigen::Vector3d phi_hat = so3_log(dR);
-    // 2. 计算VINS误差到GTSAM Tangent的转换矩阵A
-    const Eigen::Matrix<double, 15, 15> A = jac_vins_error_to_gtsam_tangent_z(phi_hat);
-    // 3. 转换协方差矩阵：GTSAM格式的协方差 = A * VINS协方差 * A^T
+    const Eigen::Matrix<double, 15, 15> A = jac_vins_error_to_gtsam_tangent_z();
     const Eigen::Matrix<double, 15, 15> Sigma_z_gtsam = A * preint.covariance * A.transpose();
 
-    // Bias Jacobian: rows [dphi, dp, dv], cols [dba, dbg]
-    // 提取VINS原生雅可比：dtheta/dbg（旋转角误差对陀螺偏置的雅可比）
     const Eigen::Matrix3d dq_dbg = preint.jacobian.block<3, 3>(O_R, O_BG);
     const Eigen::Matrix3d dp_dba = preint.jacobian.block<3, 3>(O_P, O_BA);
     const Eigen::Matrix3d dp_dbg = preint.jacobian.block<3, 3>(O_P, O_BG);
     const Eigen::Matrix3d dv_dba = preint.jacobian.block<3, 3>(O_V, O_BA);
     const Eigen::Matrix3d dv_dbg = preint.jacobian.block<3, 3>(O_V, O_BG);
-    const Eigen::Matrix3d Jr_inv = so3_right_jacobian_inverse(phi_hat);
-    // VINS provides dtheta/dbg (right-multiplicative small angle). Convert to GTSAM Tangent dphi/dbg.
-    // 转换为GTSAM格式的解析解：dphi/dbg = Jr^{-1} * dtheta/dbg
-    const Eigen::Matrix3d dphi_dbg_analytic = Jr_inv * dq_dbg;
 
-    // Empirically, VINS' closed-form propagation of dq_dbg can deviate from GTSAM Tangent's H_bg on small
-    // off-diagonal terms over long intervals. To make the exporter match the GTSAM Tangent definition, we
-    // compute dphi/dbg directly by finite-differencing phi = Log(deltaR(bg)) around the linearization bias.
-    // 有限差分法验证dphi/dbg（提高与GTSAM的一致性）
-    const double eps_bg = 1e-6;
-    Eigen::Matrix3d dphi_dbg_fd = Eigen::Matrix3d::Zero();
-    // 定义lambda函数：给定偏置，重新计算预积分的旋转李代数
-    auto phi_from_bias = [&](const Eigen::Vector3d& ba, const Eigen::Vector3d& bg) -> Eigen::Vector3d {
-      IntegrationBase tmp = preint;
-      tmp.repropagate(ba, bg); // 重新传播预积分（改变偏置）
-      return so3_log(tmp.delta_q.toRotationMatrix());
-    };
-    // 对陀螺偏置的每个维度做微小扰动，计算有限差分
-    for (int k = 0; k < 3; ++k) {
-      Eigen::Vector3d bg_p = cfg.bias_gyro; // 正扰动
-      Eigen::Vector3d bg_m = cfg.bias_gyro; // 负扰动
-      bg_p(k) += eps_bg;
-      bg_m(k) -= eps_bg;
-      const Eigen::Vector3d phi_p = phi_from_bias(cfg.bias_accel, bg_p);
-      const Eigen::Vector3d phi_m = phi_from_bias(cfg.bias_accel, bg_m);
-      // 中心差分：(f(x+eps) - f(x-eps))/(2*eps)
-      dphi_dbg_fd.col(k) = (phi_p - phi_m) / (2.0 * eps_bg);
-    }
+    Eigen::Matrix<double, 9, 6> JincBias_ba_bg = Eigen::Matrix<double, 9, 6>::Zero();
+    JincBias_ba_bg.block<3, 3>(0, 3) = dq_dbg;
+    JincBias_ba_bg.block<3, 3>(3, 0) = dp_dba;
+    JincBias_ba_bg.block<3, 3>(3, 3) = dp_dbg;
+    JincBias_ba_bg.block<3, 3>(6, 0) = dv_dba;
+    JincBias_ba_bg.block<3, 3>(6, 3) = dv_dbg;
 
-    const auto build_jinc_bias = [&](const Eigen::Matrix3d &dphi_dbg) {
-      Eigen::Matrix<double, 9, 6> JincBias_ba_bg = Eigen::Matrix<double, 9, 6>::Zero();
-      JincBias_ba_bg.block<3, 3>(0, 3) = dphi_dbg;
-      JincBias_ba_bg.block<3, 3>(3, 0) = dp_dba;
-      JincBias_ba_bg.block<3, 3>(3, 3) = dp_dbg;
-      JincBias_ba_bg.block<3, 3>(6, 0) = dv_dba;
-      JincBias_ba_bg.block<3, 3>(6, 3) = dv_dbg;
-      return JincBias_ba_bg;
-    };
-    const Eigen::Matrix<double, 9, 6> JincBias_ba_bg_fd = build_jinc_bias(dphi_dbg_fd);
-    const Eigen::Matrix<double, 9, 6> JincBias_ba_bg_analytic = build_jinc_bias(dphi_dbg_analytic);
-    const PreintFactorJacobians jac_fd = build_preint_factor_jacobians_local(dR, dP, dV, DT, JincBias_ba_bg_fd);
-    const PreintFactorJacobians jac_analytic = build_preint_factor_jacobians_local(dR, dP, dV, DT, JincBias_ba_bg_analytic);
-
-    const std::string out_txt_fd = with_suffix_before_extension(out_txt, "_fd");
-    const std::string out_txt_analytic = with_suffix_before_extension(out_txt, "_analytic");
-
-    write_pack_txt(out_txt_fd, imu_txt, config_yaml, rows.front().t, rows.back().t, DT, dt_nominal, dR, dP, dV, preint.covariance, dq_dbg,
-                   dphi_dbg_analytic, dphi_dbg_fd, dphi_dbg_fd, Sigma_z_gtsam, JincBias_ba_bg_fd, jac_fd.J_e, jac_fd.J_s,
-                   "finite_difference");
-    write_pack_txt(out_txt_analytic, imu_txt, config_yaml, rows.front().t, rows.back().t, DT, dt_nominal, dR, dP, dV, preint.covariance, dq_dbg,
-                   dphi_dbg_analytic, dphi_dbg_fd, dphi_dbg_analytic, Sigma_z_gtsam, JincBias_ba_bg_analytic, jac_analytic.J_e,
-                   jac_analytic.J_s, "analytic_from_vins_dtheta_dbg");
+    write_pack_txt(out_txt, imu_txt, config_yaml, rows.front().t, rows.back().t, DT, dt_nominal, dR, dP, dV, Sigma_z_gtsam, JincBias_ba_bg);
 
     std::cout << std::setprecision(17) << "integrated interval: ts=" << rows.front().t << " te=" << rows.back().t << " DT=" << DT << "\n";
-    std::cout << "wrote (finite-difference dphi/dbg): " << out_txt_fd << "\n";
-    std::cout << "wrote (analytic dphi/dbg): " << out_txt_analytic << "\n";
+    std::cout << "wrote: " << out_txt << "\n";
     return EXIT_SUCCESS;
 
   } catch (const std::exception &e) {
