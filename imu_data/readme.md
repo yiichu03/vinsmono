@@ -25,6 +25,23 @@ source /catkin_ws/devel/setup.bash
 
 rosrun vins_estimator export_vins_preint_pack --imu_txt /catkin_ws/src/VINS-Mono/imu_data/imu_data_Tangent_0.txt --config_yaml /catkin_ws/src/VINS-Mono/imu_data/cpc_config_Tangent_0.yaml --out_txt /catkin_ws/src/VINS-Mono/imu_data/vins_preint_pack.txt
 
+[ OK ] Sigma_z (z=[dphi,dp,dv,dba,dbg])
+[FAIL] JincBias_ba_bg (rows=[dphi,dp,dv]): max violation at (0,4)
+  a=-0.0420799110401397503 b=-0.0483458147461485396 |a-b|=0.00626590370600878938 tol=0.000583458147461485429 (abs=0.000100000000000000005, rel=0.0100000000000000002)
+  failing_entries_count=6
+  (0,4) a=-0.0420799110401397503 b=-0.0483458147461485396 |a-b|=0.00626590370600878938 tol=0.000583458147461485429
+  (0,5) a=0.103053291443817585 b=0.106660481471105462 |a-b|=0.00360719002728787652 tol=0.0011666048147110546
+  (1,3) a=0.10241240813626673 b=0.105553449402744887 |a-b|=0.00314104126647815618 tol=0.00115553449402744889
+  (1,5) a=-0.0433616337114337558 b=-0.0487368862597678393 |a-b|=0.0053752525483340835 tol=0.000587368862597678404
+  (2,3) a=-0.105027047001499341 b=-0.110213665627921328 |a-b|=0.00518661862642198768 tol=0.0012021366562792134
+  (2,4) a=0.0261059531097564967 b=0.0306810620263506077 |a-b|=0.00457510891659411098 tol=0.000406810620263506101
+  to_pass_by_tuning_tolerance:
+    rel_needed_if_abs_fixed=0.145858996430783178 (current_rel=0.0100000000000000002, abs_fixed=0.000100000000000000005)
+    abs_needed_if_rel_fixed=0.00578244555854730367 (current_abs=0.000100000000000000005, rel_fixed=0.0100000000000000002)
+export_vins_preint_pack failed: comparison failed
+
+失败只在 JincBias_ba_bg 的 6 个元素，而且全在 (rows 0..2, cols 3..5)，即 dphi/dbg 这一个 3x3 子块。
+
 ```
 root@liuyi:/ws# rosrun sliding_window_estimator compare_vinsmono_gtsam   --vins_all  /ws/src/swift_vio/imu_data/vins_preint_pack.txt   --gtsam_all /ws/src/swift_vio/imu_data/gtsam_ref_out/gtsam_ref_preint_all.txt
 [ OK ] dR
