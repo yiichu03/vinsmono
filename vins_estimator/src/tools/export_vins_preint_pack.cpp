@@ -286,10 +286,57 @@ static void write_pack_txt(const std::string &out_txt, const std::string &imu_tx
   appendMatrixBlock(ofs, "JincBias_ba_bg_vins", JincBias_ba_bg);
 }
 
-static Eigen::Matrix<double, 15, 15> jac_vins_error_to_gtsam_tangent_z() {
+static inline Eigen::Matrix3d skew(const Eigen::Vector3d &v) {
+  Eigen::Matrix3d S;
+  S << 0.0, -v.z(), v.y(), v.z(), 0.0, -v.x(), -v.y(), v.x(), 0.0;
+  return S;
+}
+
+static inline double clamp(double x, double lo, double hi) {
+  return std::max(lo, std::min(hi, x));
+}
+
+static Eigen::Vector3d so3_log(const Eigen::Matrix3d &R) {
+  const double cos_theta = clamp((R.trace() - 1.0) * 0.5, -1.0, 1.0);
+  const double theta = std::acos(cos_theta);
+  Eigen::Vector3d vee;
+  vee << (R(2, 1) - R(1, 2)), (R(0, 2) - R(2, 0)), (R(1, 0) - R(0, 1));
+  if (theta < 1e-9) {
+    return 0.5 * vee;
+  }
+  const double sin_theta = std::sin(theta);
+  if (std::abs(sin_theta) < 1e-12) {
+    return 0.5 * vee;
+  }
+  return (theta / (2.0 * sin_theta)) * vee;
+}
+
+static Eigen::Matrix3d so3_right_jacobian_inverse(const Eigen::Vector3d &phi) {
+  const double theta = phi.norm();
+  const Eigen::Matrix3d I = Eigen::Matrix3d::Identity();
+  const Eigen::Matrix3d Phi = skew(phi);
+  const Eigen::Matrix3d Phi2 = Phi * Phi;
+
+  if (theta < 1e-8) {
+    return I + 0.5 * Phi + (1.0 / 12.0) * Phi2;
+  }
+
+  const double theta2 = theta * theta;
+  const double half_theta = 0.5 * theta;
+  const double cot_half_theta = std::cos(half_theta) / std::sin(half_theta);
+  const double a = (1.0 / theta2) - (0.5 / theta) * cot_half_theta;
+  return I + 0.5 * Phi + a * Phi2;
+}
+
+static Eigen::Matrix3d theta_to_phi_jacobian_from_dR(const Eigen::Matrix3d &dR) {
+  const Eigen::Vector3d phi_hat = so3_log(dR);
+  return so3_right_jacobian_inverse(phi_hat);
+}
+
+static Eigen::Matrix<double, 15, 15> jac_vins_error_to_gtsam_tangent_z(const Eigen::Matrix3d &T_theta_to_phi) {
   Eigen::Matrix<double, 15, 15> A = Eigen::Matrix<double, 15, 15>::Zero();
   const Eigen::Matrix3d I = Eigen::Matrix3d::Identity();
-  A.block<3, 3>(0, 3) = I;      // dphi <- dtheta
+  A.block<3, 3>(0, 3) = T_theta_to_phi; // dphi <- T_theta_to_phi * dtheta
   A.block<3, 3>(3, 0) = I;      // dp <- dp
   A.block<3, 3>(6, 6) = I;      // dv <- dv
   A.block<3, 3>(9, 9) = -I;     // dba <- -dba
@@ -338,10 +385,18 @@ int main(int argc, char **argv) {
     const double dt_nominal = (cfg.dt > 0.0) ? cfg.dt : estimate_nominal_dt(rows);
     const double inv_sqrt_dt = 1.0 / std::sqrt(dt_nominal);
 
-    ACC_N = cfg.sigma_a_c * inv_sqrt_dt;
-    GYR_N = cfg.sigma_g_c * inv_sqrt_dt;
+    const double acc_n_no_sqrt2 = cfg.sigma_a_c * inv_sqrt_dt;
+    const double gyr_n_no_sqrt2 = cfg.sigma_g_c * inv_sqrt_dt;
+    double meas_scale = inv_sqrt_dt;
+    meas_scale = std::sqrt(2.0) * inv_sqrt_dt; // Comment this line to reproduce no-sqrt(2) behavior.
+    ACC_N = cfg.sigma_a_c * meas_scale;
+    GYR_N = cfg.sigma_g_c * meas_scale;
     ACC_W = cfg.sigma_aw_c * inv_sqrt_dt;
     GYR_W = cfg.sigma_gw_c * inv_sqrt_dt;
+    std::cout << std::setprecision(17) << "[debug] ACC_N no_sqrt2=" << acc_n_no_sqrt2 << " with_sqrt2=" << ACC_N
+              << " delta=" << (ACC_N - acc_n_no_sqrt2) << "\n";
+    std::cout << std::setprecision(17) << "[debug] GYR_N no_sqrt2=" << gyr_n_no_sqrt2 << " with_sqrt2=" << GYR_N
+              << " delta=" << (GYR_N - gyr_n_no_sqrt2) << "\n";
 
     IntegrationBase preint(rows.front().a, rows.front().w, cfg.bias_accel, cfg.bias_gyro);
     for (size_t k = 0; k + 1 < rows.size(); ++k) {
@@ -357,7 +412,9 @@ int main(int argc, char **argv) {
     const Eigen::Vector3d dV = preint.delta_v;
     const double DT = preint.sum_dt;
 
-    const Eigen::Matrix<double, 15, 15> A = jac_vins_error_to_gtsam_tangent_z();
+    Eigen::Matrix3d T_theta_to_phi = Eigen::Matrix3d::Identity();
+    T_theta_to_phi = theta_to_phi_jacobian_from_dR(dR); // Comment this line to reproduce dphi == dtheta behavior.
+    const Eigen::Matrix<double, 15, 15> A = jac_vins_error_to_gtsam_tangent_z(T_theta_to_phi);
     const Eigen::Matrix<double, 15, 15> Sigma_z_gtsam = A * preint.covariance * A.transpose();
 
     const Eigen::Matrix3d dq_dbg = preint.jacobian.block<3, 3>(O_R, O_BG);
@@ -367,11 +424,12 @@ int main(int argc, char **argv) {
     const Eigen::Matrix3d dv_dbg = preint.jacobian.block<3, 3>(O_V, O_BG);
 
     Eigen::Matrix<double, 9, 6> JincBias_ba_bg = Eigen::Matrix<double, 9, 6>::Zero();
-    JincBias_ba_bg.block<3, 3>(0, 3) = dq_dbg;
+    JincBias_ba_bg.block<3, 3>(0, 3) = T_theta_to_phi * dq_dbg;
     JincBias_ba_bg.block<3, 3>(3, 0) = dp_dba;
     JincBias_ba_bg.block<3, 3>(3, 3) = dp_dbg;
     JincBias_ba_bg.block<3, 3>(6, 0) = dv_dba;
     JincBias_ba_bg.block<3, 3>(6, 3) = dv_dbg;
+    std::cout << "[debug] T_theta_to_phi * dq_dbg:\n" << (T_theta_to_phi * dq_dbg) << "\n[debug] dq_dbg:\n" << dq_dbg << "\n";
 
     write_pack_txt(out_txt, imu_txt, config_yaml, rows.front().t, rows.back().t, DT, dt_nominal, dR, dP, dV, Sigma_z_gtsam, JincBias_ba_bg);
 
