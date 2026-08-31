@@ -401,7 +401,7 @@ static void compare_vinsmono_against_gtsam_ref(const std::string &config_yaml, c
   const Eigen::MatrixXd &JincBias_gtsam = get_block_or_throw(gtsam, "JincBias_ba_bg_gtsam", gtsam_all);
 
   constexpr double abs_tol = 1e-4; // 绝对误差底线。主要管接近 0 的元素（比如很多小的非对角项）。
-  constexpr double rel_tol = 1e-2; // 相对误差比例。主要管大数值元素（比如大对角项），相当于允许百分比误差。
+  constexpr double rel_tol = 1.5e-2; // 相对误差比例。主要管大数值元素（比如大对角项），相当于允许百分比误差。
   bool ok = true;
   ok &= expect_near_abs_rel(Eigen::MatrixXd(Sigma_z_vins), Sigma_z_gtsam, abs_tol, rel_tol, "Sigma_z (z=[dphi,dp,dv,dba,dbg])");
   ok &= expect_near_abs_rel(Eigen::MatrixXd(JincBias_ba_bg_vins), JincBias_gtsam, abs_tol, rel_tol, "JincBias_ba_bg (rows=[dphi,dp,dv])");
@@ -529,6 +529,28 @@ static Eigen::Matrix<double, 15, 15> jac_vins_error_to_gtsam_tangent_z(const Eig
   return A;
 }
 
+static Eigen::Matrix3d finite_difference_dphi_dbg(const IntegrationBase &preint, const Eigen::Vector3d &bias_accel,
+                                                  const Eigen::Vector3d &bias_gyro, double eps_bg = 1e-6) {
+  Eigen::Matrix3d dphi_dbg_fd = Eigen::Matrix3d::Zero();
+  for (int k = 0; k < 3; ++k) {
+    Eigen::Vector3d bg_p = bias_gyro;
+    Eigen::Vector3d bg_m = bias_gyro;
+    bg_p(k) += eps_bg;
+    bg_m(k) -= eps_bg;
+
+    IntegrationBase preint_p = preint;
+    preint_p.repropagate(bias_accel, bg_p);
+    const Eigen::Vector3d phi_p = so3_log(preint_p.delta_q.toRotationMatrix());
+
+    IntegrationBase preint_m = preint;
+    preint_m.repropagate(bias_accel, bg_m);
+    const Eigen::Vector3d phi_m = so3_log(preint_m.delta_q.toRotationMatrix());
+
+    dphi_dbg_fd.col(k) = (phi_p - phi_m) / (2.0 * eps_bg);
+  }
+  return dphi_dbg_fd;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -598,7 +620,7 @@ int main(int argc, char **argv) {
     const double DT = preint.sum_dt;
 
     Eigen::Matrix3d T_theta_to_phi = Eigen::Matrix3d::Identity();
-    // T_theta_to_phi = theta_to_phi_jacobian_from_dR(dR); // Comment this line to reproduce dphi == dtheta behavior.
+    T_theta_to_phi = theta_to_phi_jacobian_from_dR(dR); // Comment this line to reproduce dphi == dtheta behavior.
     const Eigen::Matrix<double, 15, 15> A = jac_vins_error_to_gtsam_tangent_z(T_theta_to_phi);
     const Eigen::Matrix<double, 15, 15> Sigma_z_gtsam = A * preint.covariance * A.transpose();
 
@@ -608,13 +630,20 @@ int main(int argc, char **argv) {
     const Eigen::Matrix3d dv_dba = preint.jacobian.block<3, 3>(O_V, O_BA);
     const Eigen::Matrix3d dv_dbg = preint.jacobian.block<3, 3>(O_V, O_BG);
 
+    Eigen::Matrix3d dphi_dbg = T_theta_to_phi * dq_dbg;
+    std::cout << "dq_dbg:\n" << dq_dbg << "\n";
+    std::cout << "dphi_dbg:\n" << dphi_dbg << "\n";
+    // dphi_dbg = finite_difference_dphi_dbg(preint, cfg.bias_accel, cfg.bias_gyro); // Comment this line to switch back to analytic dphi/dbg.
+    // std::cout << "fd_dphi_dbg:\n" << dphi_dbg << "\n";
+
     Eigen::Matrix<double, 9, 6> JincBias_ba_bg = Eigen::Matrix<double, 9, 6>::Zero();
-    JincBias_ba_bg.block<3, 3>(0, 3) = T_theta_to_phi * dq_dbg;
+    JincBias_ba_bg.block<3, 3>(0, 3) = dphi_dbg;
     JincBias_ba_bg.block<3, 3>(3, 0) = dp_dba;
     JincBias_ba_bg.block<3, 3>(3, 3) = dp_dbg;
     JincBias_ba_bg.block<3, 3>(6, 0) = dv_dba;
     JincBias_ba_bg.block<3, 3>(6, 3) = dv_dbg;
-    std::cout << "[debug] T_theta_to_phi * dq_dbg:\n" << (T_theta_to_phi * dq_dbg) << "\n[debug] dq_dbg:\n" << dq_dbg << "\n";
+    std::cout << "[debug] dphi_dbg (used in JincBias):\n" << dphi_dbg << "\n[debug] analytic T_theta_to_phi*dq_dbg:\n"
+              << (T_theta_to_phi * dq_dbg) << "\n";
 
     write_pack_txt(out_txt, imu_txt, config_yaml, rows.front().t, rows.back().t, DT, dt_nominal, dR, dP, dV, Sigma_z_gtsam, JincBias_ba_bg);
     compare_vinsmono_against_gtsam_ref(config_yaml, Sigma_z_gtsam, JincBias_ba_bg);

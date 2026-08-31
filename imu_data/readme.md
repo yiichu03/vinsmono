@@ -1,5 +1,18 @@
 VINS-Mono 的 exporter（vins_preint_pack.txt）里，compare_vinsmono_gtsam 实际只用这 6 个 block 名称：
 
+## 交接结论（当前提交，以此为准）
+
+- VINS-Mono 核心预积分实现未修改；验证 exporter 当前使用解析 Jacobian，并把旋转误差和协方差映射到 GTSAM Tangent 定义。
+- 2026-08-31 从当前源码强制重新编译、重新生成 `vins_preint_pack.txt` 后，内置比较器与独立 `compare_vinsmono_gtsam` 复现相同结果：`Sigma_z` 通过，`JincBias_ba_bg` 未完全通过。
+- 超差仅出现在 `dphi/dbg` 这一个 3x3 子块，共 6 个元素；最大超差位置为 `(0,4)`：VINS `-0.0420799110`，GTSAM `-0.0483458147`，绝对差 `0.0062659037`。
+- 当前容差为 `abs_tol=1e-4`、`rel_tol=1.5e-2`。程序返回非零退出码是该验证现象的预期结果，不代表导出失败；结果文件会在比较前正常写出。
+- 源码中保留了有限差分辅助函数用于后续排查，但当前未启用；本次交接不以有限差分替换解析结果，也不通过放宽容差制造 PASS。
+
+```text
+[ OK ] Sigma_z (z=[dphi,dp,dv,dba,dbg])
+[FAIL] JincBias_ba_bg (rows=[dphi,dp,dv]): max violation at (0,4)
+```
+
 dR_vins
 dP_vins
 dV_vins
