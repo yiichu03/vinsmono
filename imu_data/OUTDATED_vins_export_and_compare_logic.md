@@ -1,4 +1,8 @@
+> OUTDATED（2026-09-08）：旧导出与比较流程不再适用于当前核心修复版；当前依据为 [README](readme.md) 与 [内部修复记录](core_preintegration_fix.md)。以下历史说明保留备查。
+
 # VINS-Mono 预积分导出与对比逻辑说明
+
+> 本文为历史实现说明，部分接口与当前代码不同。当前代码已修复内部 `IntegrationBase` 并直接导出结果，以 [当前 README](readme.md) 和 [内部修复记录](core_preintegration_fix.md) 为准。不自动输出 `_fd/_analytic` 双文件，有限差分仅用于检查。
 
 本文说明两部分代码：
 

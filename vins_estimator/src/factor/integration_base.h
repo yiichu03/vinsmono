@@ -62,7 +62,11 @@ class IntegrationBase
         //ROS_INFO("midpoint integration");
         Vector3d un_acc_0 = delta_q * (_acc_0 - linearized_ba);
         Vector3d un_gyr = 0.5 * (_gyr_0 + _gyr_1) - linearized_bg;
-        result_delta_q = delta_q * Quaterniond(1, un_gyr(0) * _dt / 2, un_gyr(1) * _dt / 2, un_gyr(2) * _dt / 2);
+        const Vector3d half_step = un_gyr * (_dt / 2.0);
+        Quaterniond rotation_step(1.0, half_step.x(), half_step.y(), half_step.z());
+        rotation_step.normalize();
+        result_delta_q = (delta_q * rotation_step).normalized();
+        // Use the same unit rotation for the mean, Jacobian and covariance.
         Vector3d un_acc_1 = result_delta_q * (_acc_1 - linearized_ba);
         Vector3d un_acc = 0.5 * (un_acc_0 + un_acc_1);
         result_delta_p = delta_p + delta_v * _dt + 0.5 * un_acc * _dt * _dt;
@@ -72,14 +76,9 @@ class IntegrationBase
 
         if(update_jacobian)
         {
-            Vector3d w_x = 0.5 * (_gyr_0 + _gyr_1) - linearized_bg;
             Vector3d a_0_x = _acc_0 - linearized_ba;
             Vector3d a_1_x = _acc_1 - linearized_ba;
-            Matrix3d R_w_x, R_a_0_x, R_a_1_x;
-
-            R_w_x<<0, -w_x(2), w_x(1),
-                w_x(2), 0, -w_x(0),
-                -w_x(1), w_x(0), 0;
+            Matrix3d R_a_0_x, R_a_1_x;
             R_a_0_x<<0, -a_0_x(2), a_0_x(1),
                 a_0_x(2), 0, -a_0_x(0),
                 -a_0_x(1), a_0_x(0), 0;
@@ -87,40 +86,53 @@ class IntegrationBase
                 a_1_x(2), 0, -a_1_x(0),
                 -a_1_x(1), a_1_x(0), 0;
 
-            MatrixXd F = MatrixXd::Zero(15, 15);
+            Matrix3d half_step_cross;
+            half_step_cross << 0.0, -half_step.z(), half_step.y(),
+                               half_step.z(), 0.0, -half_step.x(),
+                               -half_step.y(), half_step.x(), 0.0;
+            // Exact right-local derivatives of normalize([1, omega*dt/2]).
+            const Matrix3d rotation_transition = rotation_step.toRotationMatrix().transpose();
+            const Matrix3d rotation_bias = -_dt / (1.0 + half_step.squaredNorm()) *
+                                          (Matrix3d::Identity() - half_step_cross);
+            const Matrix3d rotation_gyro_noise = -0.5 * rotation_bias;
+            const Matrix3d R0 = delta_q.toRotationMatrix();
+            const Matrix3d R1 = result_delta_q.toRotationMatrix();
+            const Matrix3d accel_rotation_0 = -R0 * R_a_0_x;
+            const Matrix3d accel_rotation_1 = -R1 * R_a_1_x;
+            const Matrix3d accel_rotation = accel_rotation_0 + accel_rotation_1 * rotation_transition;
+
+            Matrix<double, 15, 15> F = Matrix<double, 15, 15>::Zero();
             F.block<3, 3>(0, 0) = Matrix3d::Identity();
-            F.block<3, 3>(0, 3) = -0.25 * delta_q.toRotationMatrix() * R_a_0_x * _dt * _dt + 
-                                  -0.25 * result_delta_q.toRotationMatrix() * R_a_1_x * (Matrix3d::Identity() - R_w_x * _dt) * _dt * _dt;
+            F.block<3, 3>(0, 3) = 0.25 * accel_rotation * _dt * _dt;
             F.block<3, 3>(0, 6) = MatrixXd::Identity(3,3) * _dt;
-            F.block<3, 3>(0, 9) = -0.25 * (delta_q.toRotationMatrix() + result_delta_q.toRotationMatrix()) * _dt * _dt;
-            F.block<3, 3>(0, 12) = -0.25 * result_delta_q.toRotationMatrix() * R_a_1_x * _dt * _dt * -_dt;
-            F.block<3, 3>(3, 3) = Matrix3d::Identity() - R_w_x * _dt;
-            F.block<3, 3>(3, 12) = -1.0 * MatrixXd::Identity(3,3) * _dt;
-            F.block<3, 3>(6, 3) = -0.5 * delta_q.toRotationMatrix() * R_a_0_x * _dt + 
-                                  -0.5 * result_delta_q.toRotationMatrix() * R_a_1_x * (Matrix3d::Identity() - R_w_x * _dt) * _dt;
+            F.block<3, 3>(0, 9) = -0.25 * (R0 + R1) * _dt * _dt;
+            F.block<3, 3>(0, 12) = 0.25 * accel_rotation_1 * rotation_bias * _dt * _dt;
+            F.block<3, 3>(3, 3) = rotation_transition;
+            F.block<3, 3>(3, 12) = rotation_bias;
+            F.block<3, 3>(6, 3) = 0.5 * accel_rotation * _dt;
             F.block<3, 3>(6, 6) = Matrix3d::Identity();
-            F.block<3, 3>(6, 9) = -0.5 * (delta_q.toRotationMatrix() + result_delta_q.toRotationMatrix()) * _dt;
-            F.block<3, 3>(6, 12) = -0.5 * result_delta_q.toRotationMatrix() * R_a_1_x * _dt * -_dt;
+            F.block<3, 3>(6, 9) = -0.5 * (R0 + R1) * _dt;
+            F.block<3, 3>(6, 12) = 0.5 * accel_rotation_1 * rotation_bias * _dt;
             F.block<3, 3>(9, 9) = Matrix3d::Identity();
             F.block<3, 3>(12, 12) = Matrix3d::Identity();
             //cout<<"A"<<endl<<A<<endl;
 
-            MatrixXd V = MatrixXd::Zero(15,18);
-            V.block<3, 3>(0, 0) =  0.25 * delta_q.toRotationMatrix() * _dt * _dt;
-            V.block<3, 3>(0, 3) =  0.25 * -result_delta_q.toRotationMatrix() * R_a_1_x  * _dt * _dt * 0.5 * _dt;
-            V.block<3, 3>(0, 6) =  0.25 * result_delta_q.toRotationMatrix() * _dt * _dt;
+            Matrix<double, 15, 18> V = Matrix<double, 15, 18>::Zero();
+            V.block<3, 3>(0, 0) =  0.25 * R0 * _dt * _dt;
+            V.block<3, 3>(0, 3) =  0.25 * accel_rotation_1 * rotation_gyro_noise * _dt * _dt;
+            V.block<3, 3>(0, 6) =  0.25 * R1 * _dt * _dt;
             V.block<3, 3>(0, 9) =  V.block<3, 3>(0, 3);
-            V.block<3, 3>(3, 3) =  0.5 * MatrixXd::Identity(3,3) * _dt;
-            V.block<3, 3>(3, 9) =  0.5 * MatrixXd::Identity(3,3) * _dt;
-            V.block<3, 3>(6, 0) =  0.5 * delta_q.toRotationMatrix() * _dt;
-            V.block<3, 3>(6, 3) =  0.5 * -result_delta_q.toRotationMatrix() * R_a_1_x  * _dt * 0.5 * _dt;
-            V.block<3, 3>(6, 6) =  0.5 * result_delta_q.toRotationMatrix() * _dt;
+            V.block<3, 3>(3, 3) =  rotation_gyro_noise;
+            V.block<3, 3>(3, 9) =  rotation_gyro_noise;
+            V.block<3, 3>(6, 0) =  0.5 * R0 * _dt;
+            V.block<3, 3>(6, 3) =  0.5 * accel_rotation_1 * rotation_gyro_noise * _dt;
+            V.block<3, 3>(6, 6) =  0.5 * R1 * _dt;
             V.block<3, 3>(6, 9) =  V.block<3, 3>(6, 3);
             V.block<3, 3>(9, 12) = MatrixXd::Identity(3,3) * _dt;
             V.block<3, 3>(12, 15) = MatrixXd::Identity(3,3) * _dt;
 
-            //step_jacobian = F;
-            //step_V = V;
+            step_jacobian = F;
+            step_V = V;
             jacobian = F * jacobian;
             covariance = F * covariance * F.transpose() + V * noise * V.transpose();
         }

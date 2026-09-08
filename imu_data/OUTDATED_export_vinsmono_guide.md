@@ -1,4 +1,8 @@
+> OUTDATED（2026-09-08）：旧版接口及有限差分替换方案的历史说明，已被 [当前 README](readme.md) 与 [内部修复记录](core_preintegration_fix.md) 取代。以下原文保留备查。
+
 # VINS-Mono `export_vins_preint_pack.cpp` 提炼说明
+
+> 本文保留历史推导和旧接口；当前版本已修复内部 `IntegrationBase`，输出字段和验证结果见 [README](readme.md) 及 [内部修复记录](core_preintegration_fix.md)。当前不输出 `J_s/J_e`，有限差分仅用于检查。
 
 ## 1) 导出逻辑（第一性原理）
 - 目标：把 VINS 内部预积分结果映射到统一的 GTSAM 切空间残差定义。

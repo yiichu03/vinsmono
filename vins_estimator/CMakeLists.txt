@@ -60,3 +60,8 @@ add_executable(export_vins_preint_pack
 )
 target_link_libraries(export_vins_preint_pack ${catkin_LIBRARIES} ${OpenCV_LIBS} ${CERES_LIBRARIES})
 
+add_executable(test_imu_preintegration
+    src/tools/test_imu_preintegration.cpp
+    src/parameters.cpp
+)
+target_link_libraries(test_imu_preintegration ${catkin_LIBRARIES} ${OpenCV_LIBS} ${CERES_LIBRARIES})

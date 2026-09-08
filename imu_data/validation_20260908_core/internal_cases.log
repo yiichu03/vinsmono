@@ -1,0 +1,66 @@
+[ OK ] zero rotation step F(15x15) max_abs=8.75168e-12
+[ OK ] zero rotation step V(15x18) max_abs=9.92696e-12
+[ OK ] zero rotation step covariance from numeric F/V max_abs=3.53113e-13
+[ OK ] zero rotation step F(15x15) max_abs=1.08026e-10
+[ OK ] zero rotation step V(15x18) max_abs=8.76426e-11
+[ OK ] zero rotation step covariance from numeric F/V max_abs=5.28469e-12
+[ OK ] zero rotation step F(15x15) max_abs=7.96744e-10
+[ OK ] zero rotation step V(15x18) max_abs=9.53484e-10
+[ OK ] zero rotation step covariance from numeric F/V max_abs=3.55067e-11
+[ OK ] covariance symmetric/PSD zero rotation step
+[ OK ] changing gyro step F(15x15) max_abs=1.04621e-11
+[ OK ] changing gyro step V(15x18) max_abs=9.92696e-12
+[ OK ] changing gyro step covariance from numeric F/V max_abs=3.83384e-13
+[ OK ] changing gyro step F(15x15) max_abs=9.35093e-11
+[ OK ] changing gyro step V(15x18) max_abs=8.76426e-11
+[ OK ] changing gyro step covariance from numeric F/V max_abs=4.83124e-12
+[ OK ] changing gyro step F(15x15) max_abs=1.04339e-09
+[ OK ] changing gyro step V(15x18) max_abs=1.00998e-09
+[ OK ] changing gyro step covariance from numeric F/V max_abs=3.68448e-11
+[ OK ] covariance symmetric/PSD changing gyro step
+[ OK ] large rotation step F(15x15) max_abs=2.76788e-11
+[ OK ] large rotation step V(15x18) max_abs=2.07589e-11
+[ OK ] large rotation step covariance from numeric F/V max_abs=1.87962e-12
+[ OK ] large rotation step F(15x15) max_abs=2.27784e-10
+[ OK ] large rotation step V(15x18) max_abs=2.20726e-10
+[ OK ] large rotation step covariance from numeric F/V max_abs=7.5351e-12
+[ OK ] large rotation step F(15x15) max_abs=2.50766e-09
+[ OK ] large rotation step V(15x18) max_abs=2.48431e-09
+[ OK ] large rotation step covariance from numeric F/V max_abs=1.02716e-10
+[ OK ] covariance symmetric/PSD large rotation step
+[ OK ] zero gyro internal bias J(9x6) max_abs=8.2484e-10
+[ OK ] zero gyro internal bias J(9x6) max_abs=2.59465e-09
+[ OK ] zero gyro internal bias J(9x6) max_abs=3.24884e-08
+[ OK ] zero gyro repropagate Jacobian max_abs=0
+[ OK ] zero gyro repropagate covariance max_abs=0
+[ OK ] covariance symmetric/PSD zero gyro
+[ OK ] bias-cancelled internal bias J(9x6) max_abs=8.2484e-10
+[ OK ] bias-cancelled internal bias J(9x6) max_abs=2.59465e-09
+[ OK ] bias-cancelled internal bias J(9x6) max_abs=3.24884e-08
+[ OK ] bias-cancelled repropagate Jacobian max_abs=0
+[ OK ] bias-cancelled repropagate covariance max_abs=0
+[ OK ] covariance symmetric/PSD bias-cancelled
+[ OK ] tiny gyro internal bias J(9x6) max_abs=1.52156e-10
+[ OK ] tiny gyro internal bias J(9x6) max_abs=9.58067e-10
+[ OK ] tiny gyro internal bias J(9x6) max_abs=7.59374e-09
+[ OK ] tiny gyro repropagate Jacobian max_abs=0
+[ OK ] tiny gyro repropagate covariance max_abs=0
+[ OK ] covariance symmetric/PSD tiny gyro
+[ OK ] large single step internal bias J(9x6) max_abs=1.59332e-11
+[ OK ] large single step internal bias J(9x6) max_abs=1.28129e-10
+[ OK ] large single step internal bias J(9x6) max_abs=1.53838e-09
+[ OK ] large single step repropagate Jacobian max_abs=0
+[ OK ] large single step repropagate covariance max_abs=0
+[ OK ] covariance symmetric/PSD large single step
+[ OK ] 10s changing axes internal bias J(9x6) max_abs=2.65332e-07
+[ OK ] 10s changing axes internal bias J(9x6) max_abs=4.36166e-07
+[ OK ] 10s changing axes internal bias J(9x6) max_abs=3.43865e-06
+[ OK ] 10s changing axes repropagate Jacobian max_abs=0
+[ OK ] 10s changing axes repropagate covariance max_abs=0
+[ OK ] covariance symmetric/PSD 10s changing axes
+[ OK ] irregular intervals internal bias J(9x6) max_abs=3.04975e-07
+[ OK ] irregular intervals internal bias J(9x6) max_abs=4.02779e-07
+[ OK ] irregular intervals internal bias J(9x6) max_abs=5.72389e-06
+[ OK ] irregular intervals repropagate Jacobian max_abs=0
+[ OK ] irregular intervals repropagate covariance max_abs=0
+[ OK ] covariance symmetric/PSD irregular intervals

@@ -1,0 +1,17 @@
+[debug] ACC_N no_sqrt2=0.42426406871192851
+[debug] GYR_N no_sqrt2=0.70710678118654757
+[debug] ACC_N with_sqrt2=0.60000000000000009 delta=0.17573593128807158
+[debug] GYR_N with_sqrt2=1.0000000000000002 delta=0.29289321881345265
+[ OK ] core JincBias(9x6) vs VINS finite difference, eps=1.000000e-05
+[ OK ] core JincBias(9x6) vs VINS finite difference, eps=1.000000e-06
+[ OK ] core JincBias(9x6) vs VINS finite difference, eps=1.000000e-07
+[ OK ] core covariance symmetry/PSD
+[debug] Jacobian source: IntegrationBase::jacobian
+[debug] dphi/dbg (mapped from core):
+  -9.9552728518679938 -0.048031739216781277   0.10677392463159752
+  0.10587703667193793   -9.9980333180320269 -0.048265388204227211
+ -0.10971496757024202  0.031104206549463109   -10.040600485054775
+[ OK ] Sigma_z (z=[dphi,dp,dv,dba,dbg])
+[ OK ] JincBias_ba_bg (rows=[dphi,dp,dv])
+integrated interval: ts=0 te=9.9949999999999992 DT=9.9949999999999992
+wrote: /catkin_ws/src/VINS-Mono/imu_data/validation_20260908_core/vins_preint_core.txt

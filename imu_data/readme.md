@@ -1,32 +1,36 @@
 # VINS-Mono IMU 预积分验证交接
 
-本目录提供同一段 IMU 输入下的 VINS-Mono 预积分结果，并按 GTSAM Tangent 误差状态定义检查协方差和 bias Jacobian。VINS-Mono 核心预积分实现未修改，新增内容仅位于验证 exporter、输入、参考数据和结果文件。
+本目录提供同一段 IMU 输入下的 VINS-Mono 预积分结果，并按 GTSAM Tangent 误差状态定义检查协方差和 bias Jacobian。2026-09-08 的最新修复已落实到核心 `IntegrationBase`，导出工具直接读取内部 `jacobian` 和 `covariance`，只做必要的误差坐标转换。
 
-## 比较器使用的数据块
+## 导出与比较的数据块
 
-`vins_preint_pack.txt` 中参与比较的是：
+`vins_preint_pack.txt` 导出：
 
 - `dR_vins`、`dP_vins`、`dV_vins`、`DT_vins`
 - `Sigma_z_vins_gtsam`：15x15，顺序为 `[dphi,dp,dv,dba,dbg]`
 - `JincBias_ba_bg_vins`：9x6，行顺序为 `[dphi,dp,dv]`，列顺序为 `[dba,dbg]`
 
-其他 `Sigma_vins_raw`、`dq_dbg_vins_raw` 等数据块仅用于调试。
+当前内置及独立比较器只检查 `Sigma_z_vins_gtsam` 和 `JincBias_ba_bg_vins`。均值增量也会导出，但不在这两个比较器的当前通过结论内。
+文件头 `jacobian_source: IntegrationBase::jacobian` 标明结果来源。当前已移除 exporter 另算旋转导数和替换子块的实现。
 
 ## 当前可复现结论
 
-2026-08-31 从当前源码强制重新编译并重新生成结果后，exporter 内置比较器与独立 `compare_vinsmono_gtsam` 得到一致结论：
+2026-09-08 核心修复版：内置比较器与独立 `compare_vinsmono_gtsam` 对同一 IMU 输入和原有 GTSAM reference 均通过：
 
 ```text
 [ OK ] Sigma_z (z=[dphi,dp,dv,dba,dbg])
-[FAIL] JincBias_ba_bg (rows=[dphi,dp,dv]): max violation at (0,4)
+[ OK ] JincBias_ba_bg (rows=[dphi,dp,dv])
 ```
 
-- 当前容差：`abs_tol=1e-4`、`rel_tol=1.5e-2`。
-- 超差集中在 `dphi/dbg` 一个 3x3 子块，共 6 个元素。
-- 最大超差位置 `(0,4)`：VINS 为 `-0.0420799110`，GTSAM 为 `-0.0483458147`，绝对差为 `0.0062659037`。
-- exporter 会先正常写出结果文件，再因比较未全部通过返回非零退出码；这是当前验证现象，不是数据导出失败。
+- 容差保持为 `abs_tol=1e-4`、`rel_tol=1.5e-2`；通过只针对本目录固定输入与该容差。
+- 原失败位置 `(0,4)` 的绝对差由 `0.0062659037` 降至 `0.0003140755`，小于容差 `0.0008251872`。
+- 内部旋转递推采用归一化四元数的精确导数，并同步更新位置/速度耦合项和噪声注入矩阵。
+- 下一时刻的四元数在旋转加速度之前归一化，使均值、Jacobian、协方差使用一致的旋转；因此位置/速度均值和协方差也会相应变化。
+- 不再提供 `exact/native` 切换，也不在 exporter 中替换内部结果。旧版本 `3962798` 的6项超差和前一轮 exporter 原型结果仅作历史对照。
 
-当前提交保留了解析 Jacobian 结果。源码中有限差分辅助函数仅供后续排查，默认未启用；本次交接不通过切换有限差分或继续放宽容差制造 PASS。
+`--check_jacobian_fd` 用3种步长 `1e-5/1e-6/1e-7` 检查完整9x6 bias Jacobian，差分值仅用于核验。单元测试另检查15x15状态转移矩阵、15x18噪声矩阵、由数值导数组合得到的协方差、6种合成运动和重传播一致性。当前说明见 [内部修复记录](core_preintegration_fix.md)，日志见 [validation_20260908_core](validation_20260908_core)。[上一轮原型](OUTDATED_rotation_bias_fix.md) 及 `validation_20260908/` 为历史记录。
+
+版本说明（2026-09-08）：本次交接修订包含核心修复、回归测试和新结果。[GitHub 仓库](https://github.com/yiichu03/vinsmono) 中旧快照 `3962798` 仍是原生 bias Jacobian 超差版本；复现本次通过结果须使用该快照之后的核心修复提交，不能只下载旧快照。
 
 ## 复现命令
 
@@ -36,17 +40,21 @@ docker exec -it --user "$(id -u)":"$(id -g)" vins_mono_kinetic bash
 
 source /opt/ros/kinetic/setup.bash
 cd /catkin_ws
-catkin_make -DCMAKE_BUILD_TYPE=Release
+catkin_make -j2 -l2 -DCATKIN_WHITELIST_PACKAGES= -DCMAKE_BUILD_TYPE=Release
 source /catkin_ws/devel/setup.bash
 
 rosrun vins_estimator export_vins_preint_pack \
   --imu_txt /catkin_ws/src/VINS-Mono/imu_data/imu_data_Tangent_0.txt \
   --config_yaml /catkin_ws/src/VINS-Mono/imu_data/cpc_config_Tangent_0.yaml \
-  --out_txt /catkin_ws/src/VINS-Mono/imu_data/vins_preint_pack.txt
+  --out_txt /catkin_ws/src/VINS-Mono/imu_data/vins_preint_pack.txt \
+  --check_jacobian_fd
+
+# 内部矩阵检查 + 合成运动回归 + 直接导出的 GTSAM 比较。
+bash /catkin_ws/src/VINS-Mono/imu_data/run_validation.sh /catkin_ws/devel/lib/vins_estimator
 ```
 
-独立比较器位于 `vio_imu_process` 仓库的 `compare_vinsmono_gtsam.cpp`。使用同一份 GTSAM reference 再运行一次，可复现相同的 `Sigma_z` PASS 与 `JincBias` FAIL。
+独立比较器位于 `vio_imu_process` 仓库的 `compare_vinsmono_gtsam.cpp`。本次使用同一 IMU 与配置的 GTSAM reference，检查内部结果直接导出的矩阵，得到 `Sigma_z` 和 `JincBias` 双 PASS。
 
 ## 已确认的现象
 
-VINS 的离散噪声传播需要先把配置中的连续时间噪声密度换算到采样步长；协方差还需要把 VINS 的旋转误差和 bias 增量约定映射到统一的 GTSAM Tangent 定义。完成这些转换后，协方差已经对齐。当前保留的问题仅是长时间积分下，VINS 解析旋转 bias Jacobian 与 GTSAM 参考在若干小的非对角元素上存在系统偏差。
+原版的旋转 Jacobian 使用一阶近似，且加速度旋转使用了尚未归一化的四元数。修复版使均值与完整内部误差传播一致。当前结论限于预积分层面的上述测试，不等于完整 VIO 轨迹精度已验证，也不保证所有输入与时长都满足同一 GTSAM 容差。

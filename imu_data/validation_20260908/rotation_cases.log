@@ -1,0 +1,6 @@
+[ OK ] zero rotation max_fd_error=9.4369e-16
+[ OK ] bias-cancelled rotation max_fd_error=1.43773e-11
+[ OK ] tiny rotation max_fd_error=1.38778e-15
+[ OK ] large single step max_fd_error=1.1875e-09
+[ OK ] 10s changing axes max_fd_error=2.79737e-08
+[ OK ] irregular intervals max_fd_error=2.97849e-08

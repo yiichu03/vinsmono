@@ -1,0 +1,20 @@
+[debug] ACC_N no_sqrt2=0.42426406871192851
+[debug] GYR_N no_sqrt2=0.70710678118654757
+[debug] ACC_N with_sqrt2=0.60000000000000009 delta=0.17573593128807158
+[debug] GYR_N with_sqrt2=1.0000000000000002 delta=0.29289321881345265
+[ OK ] exact dphi/dbg vs VINS finite difference, eps=1.000000e-05
+[ OK ] exact dphi/dbg vs VINS finite difference, eps=1.000000e-06
+[ OK ] exact dphi/dbg vs VINS finite difference, eps=1.000000e-07
+[debug] rotation_bias_jacobian=exact
+[debug] dphi_dbg_native:
+  -10.000913496631073  -0.04207991104013975   0.10305329144381759
+  0.10241240813626673   -10.042820116836426 -0.043361633711433756
+ -0.10502704700149934  0.026105953109756497   -10.084909217487155
+[debug] dphi_dbg_exact:
+  -9.9552728518679974 -0.048031739216761959   0.10677392463155666
+  0.10587703667191262   -9.9980333180320127 -0.048265388204207893
+ -0.10971496757020649  0.031104206549433355   -10.040600485054785
+[ OK ] Sigma_z (z=[dphi,dp,dv,dba,dbg])
+[ OK ] JincBias_ba_bg (rows=[dphi,dp,dv])
+integrated interval: ts=0 te=9.9949999999999992 DT=9.9949999999999992
+wrote: /catkin_ws/src/VINS-Mono/imu_data/validation_20260908/vins_preint_exact.txt
